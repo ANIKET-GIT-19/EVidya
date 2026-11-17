@@ -1,0 +1,897 @@
+# Tasks.md: Phase 2 (Intelligence, Immersion and Reach), Supabase edition
+
+**Project:** STEM learning platform for **CBSE Class 10 and Class 12** (Mathematics, Physics, Chemistry, Biology)
+**Backend stack change:** MongoDB Atlas and the custom JWT login are replaced by **Supabase** (Postgres database, Supabase Auth and `pgvector` for vector search). Setup details, SQL and code are in `SUPABASE_SETUP.md`.
+**Starts when:** Phase 1 (Tasks 0 to 11) is finished, deployed and working
+**Ends when:** every feature in the final feature list below works inside the same website, plus the offline mode
+
+---
+
+## 0. How to use this file (rules for the user and for any tool or agent)
+
+1. Every task and every subtask has its own checkbox: `- [ ]` means not done, `- [x]` means done.
+2. A tool or agent marks a checkbox `- [x]` only when that exact item is finished and verified. It never marks items it did not do.
+3. A parent task is marked `- [x]` only after ALL its subtasks are `- [x]`.
+4. Task IDs look like `P2-3.4` (Phase 2, section 3, task 4). Do not renumber them; other tasks refer to them.
+5. Keep each task to **one sitting** (about 1 to 3 hours). If a task feels bigger, split it into new subtasks instead of skipping it.
+6. Order matters inside a section. Sections can overlap only where "Depends on" allows it.
+7. Secrets: the agent reads keys only from `process.env` (backend) or `import.meta.env` (frontend). It never prints or hardcodes key values. The variable names live in `backend/.env.example`.
+8. Database rule: every table that holds personal data has a `user_id` column and **Row Level Security (RLS)** enabled. The backend uses the Supabase service role key, which bypasses RLS, so every backend query on personal data must also filter by the verified user id.
+
+### Legend
+
+| Mark | Meaning |
+|---|---|
+| ✍️ | **Hand-write.** The user writes this core logic personally. The agent only guides, explains and reviews. |
+| 🆕 | **New technology** for the user. The agent must say it is new, then teach it step by step before implementing. |
+| 🔗 | **Depends on** another task. Do not start before that task is `[x]`. |
+| ⚠️ | Risk or thing to double check (limits, licences, performance). |
+
+### Naming decision
+
+The AI character (earlier called "Chotu") is renamed **Saarthi** (Sanskrit for "guide / charioteer"). Saarthi is **one character** that works as both the **AI mentor** and the **24/7 doubt solver**. Wherever this file says Saarthi, it means that single character. The name can be changed in task P2-0.2 without affecting anything else.
+
+### Naming rules for the database
+
+- Tables and columns use `snake_case` (for example `chat_sessions`, `class_level`, `preferred_language`).
+- `class` is written `class_level` in the database to avoid keyword problems.
+- What this file used to call a "model" is now a "table". SQL files live in `backend/sql/` and are numbered (`001_init.sql`, `002_content.sql`, ...).
+
+### Final feature list covered by this file
+
+| # | Feature | Section |
+|---|---|---|
+| 1 | CBSE-based RAG pipeline | 2 |
+| 2 | Summary (ask Gemini) | 4 |
+| 3 | MCQ questions | 5 |
+| 4 | Human handwriting / notes | 6 |
+| 5 | Interactive diagrams | 7 |
+| 6 | **Virtual Learning section (new)** | 8 |
+| 7 | 3D virtual labs (physics, chemistry, biology) | 9 |
+| 8 | AI-based videos (dummy videos for chapters) | 10 |
+| 9 | Community (Discord) | 11 |
+| 10 | AI mentor with context storing (Saarthi) | 3 |
+| 11 | 24/7 AI doubt solver (Saarthi) | 3 |
+| 12 | Multi-board and multi-language support | 1 |
+| 13 | Offline part of the app (questions, lectures, notes) | 12 |
+
+Not part of Phase 2 (left for later): sign language, SaaS, gamification, teacher dashboard, role-play lessons, native mobile app (Android APK / Capacitor).
+
+---
+
+## P2-0. Phase 2 setup and decisions
+
+- [x] **P2-0.1 Confirm Phase 1 is really finished**
+  - [x] Auth, profile, lessons, notes, MCQ practice, Gemini summary, SVG diagrams, pendulum lab, admin panel all work on the deployed site
+  - [x] Seed data exists (4 chapters, 10+ MCQs each) and is backed up (export from the current database as JSON before the Supabase move)
+  - [x] Phase 1 code is merged to `main` and tagged `v1.0`
+  - [x] Create a new branch `phase2` for all work in this file
+- [x] **P2-0.2 Lock the decisions (write answers into `Design.md`)**
+  - [x] Final name of the AI character (default: **Saarthi**)
+  - [x] Classes: **10 and 12** (CBSE). Confirm the chapter list for each subject and class
+  - [x] Languages: English + Hindi + **one regional language** (user to choose which one)
+  - [x] Database, login and vector storage: **Supabase** (Postgres + Supabase Auth + `pgvector`), see P2-0.6 and P2-2.4
+  - [x] Hosting for videos (default: Cloudinary free tier, unlisted YouTube, or Supabase Storage, see P2-10.4)
+- [x] **P2-0.3 Update the planning files before coding**
+  - [x] Update `PRD.md`: classes 10 and 12, Phase 2 feature list, Virtual Learning section
+  - [x] Update `Design.md`: new pages, new database tables, new API routes (list below)
+  - [x] New pages: `/mentor` (Saarthi), `/virtual-learning`, `/virtual-learning/:topic`, `/labs`, `/labs/:id`, `/videos`, `/community`, `/notes/handwriting`, `/offline`
+  - [x] New tables: `chunks`, `documents`, `chat_sessions`, `chat_messages`, `memory_facts`, `videos`, `labs`, `virtual_topics`, `translation_strings` (plus `profiles` from P2-0.6)
+  - [x] New routes (grouped): `/api/rag/*`, `/api/mentor/*`, `/api/summary/*`, `/api/mcq/*`, `/api/notes/*`, `/api/videos/*`, `/api/labs/*`, `/api/virtual/*`
+- [x] **P2-0.4 Accounts, keys and limits** ⚠️
+  - [x] Gemini API key stored only in backend `.env` (never in frontend code)
+  - [x] Supabase service role (secret) key stored only in backend `.env`; frontend gets only the project URL and the anon (publishable) key
+  - [x] Check the current Gemini free-tier limits and the current Supabase free-tier limits (database size, storage, bandwidth, pausing of inactive projects) and write them in `Design.md`
+  - [x] Add a per-user rate limit on every AI route (`express-rate-limit`) ✍️
+  - [x] Add a simple usage counter so free-tier limits are not exceeded during demo
+- [x] **P2-0.5 Folder structure additions**
+  - [x] `backend/src/rag/`, `backend/src/mentor/`, `backend/src/jobs/`, `backend/src/lib/` (Supabase admin client), `backend/src/middleware/` (auth)
+  - [x] `backend/sql/` for numbered SQL migration files
+  - [x] `frontend/src/lib/` (Supabase browser client)
+  - [x] `frontend/src/features/virtual-learning/`, `frontend/src/features/labs/`, `frontend/src/features/mentor/`, `frontend/src/offline/`
+  - [x] `content/` folder (not deployed) for source PDFs, scripts and video storyboards
+- [x] **P2-0.6 Supabase project and Auth setup** 🆕 (do this before P2-1; details in `SUPABASE_SETUP.md`)
+  - [x] Create the Supabase project, save the database password, note the project URL, anon key and service role key
+  - [x] Run `backend/sql/001_init.sql` in the Supabase SQL Editor: `vector` extension, `profiles` table, signup trigger, `chunks` table, `match_chunks` function, RLS policies
+  - [x] Enable the Email provider; turn off "Confirm email" for development only; set Site URL and redirect URLs
+  - [x] Optional: enable Google login (Google Cloud OAuth client)
+  - [x] Install `@supabase/supabase-js` in backend and frontend; remove `mongoose`, `bcryptjs` and `jsonwebtoken` from the backend
+  - [x] Create `frontend/src/lib/supabaseClient.js`, `backend/src/lib/supabaseAdmin.js` and the `requireAuth` / `requireAdmin` middleware
+  - [x] Replace Phase 1 register, login, logout and "current user" code with Supabase Auth; send `Authorization: Bearer <access_token>` from the frontend to the backend
+  - [x] Move the Phase 1 seed data (chapters, lessons, MCQs) from MongoDB JSON into the new tables with a one-time script, then delete the script and the old `MONGODB_URI`
+  - [x] Make the first admin by setting `role = 'admin'` on your row in `profiles`
+  - [x] Tag the branch `v1.1-supabase` when login, lessons and MCQs work again on Supabase
+
+---
+
+## P2-1. Multi-board and multi-language support (foundation, do this first)
+
+Reason it comes first: board and language change how content is stored, so every later feature depends on it.
+🔗 Depends on P2-0.6.
+
+- [x] **P2-1.1 Content table upgrade** ✍️
+  - [x] Add columns `board` (CBSE now; ICSE, State boards later), `class_level` (10, 12), `subject`, `language` to the `chapters`, `lessons`, `mcqs`, `videos` and `chunks` tables
+  - [x] Write a SQL migration file (`backend/sql/00x_multiboard.sql`) that tags all Phase 1 seed data as `board = 'CBSE'`, `language = 'en'`
+  - [x] Add composite Postgres indexes on `(board, class_level, subject, language)`
+  - [x] Update admin forms so every content item must choose board, class, subject, language
+- [x] **P2-1.2 Add Class 12 and complete Class 10 content skeleton**
+  - [x] Create chapter lists for Class 10 and Class 12 for all four subjects (titles and order only)
+  - [x] Mark which chapters will get full content, MCQs, video and virtual learning topics first
+  - [x] Seed at least 3 chapters per subject per class with lesson text (more can be added later)
+- [x] **P2-1.3 User preferences** ✍️
+  - [x] The `profiles` table stores `board`, `class_level`, `preferred_language`
+  - [x] Every content API filters by the user's profile unless overridden
+  - [x] "Change board / class / language" screen in settings (updates the user's own `profiles` row)
+- [x] **P2-1.4 UI translation (i18n)** 🆕
+  - [x] Install `react-i18next` and explain how translation files work
+  - [x] Move all hard-coded UI text into `en.json`
+  - [x] Create `hi.json` and the chosen regional language file
+  - [x] Language switcher in the navbar, choice saved in `profiles.preferred_language` and localStorage
+  - [x] Check long words and non-Latin fonts do not break layouts (add Noto Sans fonts)
+- [x] **P2-1.5 Content translation**
+  - [x] Decide approach: admin-entered translations first, Gemini-assisted draft translation second
+  - [x] Add a "Translate this lesson" admin button that asks Gemini for a draft, saved with `status = 'draft'`
+  - [x] Human review screen: admin approves or edits before a translated lesson goes live
+  - [x] Fallback rule: if a translation is missing, show English with a small "not available in your language" note
+  - [x] Translate at least 2 chapters per subject into Hindi and the regional language
+- [x] **P2-1.6 Multi-board readiness check**
+  - [x] Add one small non-CBSE sample chapter to prove the tables work (can be removed later)
+  - [x] Confirm RAG and Saarthi filter by board (verified again in P2-2.8)
+
+---
+
+## P2-2. CBSE-based RAG pipeline 🆕
+
+Goal: Saarthi and the summary tool answer from CBSE material and from the student's own notes, and show where the answer came from.
+🔗 Depends on P2-1.1.
+
+- [x] **P2-2.1 Learn and write down the RAG idea (for viva)**
+  - [x] Write a one-page explanation in `docs/rag.md`: what RAG is, why not just prompt the LLM, what chunks, embeddings and vector search are
+  - [x] Draw the pipeline diagram (ingest, chunk, embed, store, retrieve, prompt, answer, cite)
+  - [x] Write 5 viva questions and answers about RAG
+- [x] **P2-2.2 Source documents** ⚠️
+  - [x] Collect CBSE source material for Class 10 and 12 (NCERT textbooks, CBSE syllabus, sample papers)
+  - [x] Check usage terms of each source. Keep only what is allowed for educational use and note the source on every chunk
+  - [x] Store PDFs in `content/` and list them in a `sources.md` table (title, class, subject, source, licence note)
+- [x] **P2-2.3 Ingestion script** ✍️
+  - [x] Extract text from PDFs (try `pdf-parse` or `pdfjs-dist`; use OCR in P2-6.6 for scanned pages)
+  - [x] Clean text: remove headers, footers, page numbers, broken hyphenation
+  - [x] Chunk by headings first, then by size (start with about 500 tokens and 50 token overlap)
+  - [x] Attach metadata to every chunk: `board, class_level, subject, chapter, page, language, source, type` (`textbook | notes | question | video`)
+  - [x] Save chunks in the `chunks` table (through the service role client)
+  - [x] Make the script re-runnable without duplicating chunks (the `content_hash` column is `unique`; use upsert on it)
+- [x] **P2-2.4 Embeddings and vector store** 🆕
+  - [x] Choose the embedding model (Gemini embedding model, check current name in docs), set its output size to match the `vector(768)` column (or change the column size in SQL if you choose another size), and note it in `Design.md`
+  - [x] Vector store: **Supabase Postgres with `pgvector`** (same database as the rest of the app). Write 3 reasons and one alternative (Chroma, Qdrant) in `Design.md`
+  - [x] Confirm the HNSW index (`vector_cosine_ops`) and the metadata filter columns (`board, class_level, subject, language, user_id`) exist (created in `001_init.sql`); check the Supabase docs for current vector size and index limits
+  - [x] Embed all chunks in batches, respecting rate limits, with retry and progress log
+  - [x] Store the `embedding_model` column so chunks can be re-embedded later if the model changes
+- [x] **P2-2.5 Retrieval service** ✍️
+  - [x] Function `retrieve(query, filters, k)` that embeds the query and calls the `match_chunks` SQL function with `supabaseAdmin.rpc('match_chunks', {...})`
+  - [x] Always filter by board and class; filter by subject when known
+  - [x] Add a minimum similarity score (`min_similarity` argument); return "nothing relevant found" below it
+  - [x] Optional improvement: hybrid search (Postgres full-text search + vector) and re-ranking
+  - [x] Unit tests with 10 known questions and the chunk each should return
+- [x] **P2-2.6 Answer generation with citations** ✍️
+  - [x] Write the prompt template: role, rules, retrieved context, question, answer format
+  - [x] Rule in prompt: answer only from the context; if not found, say so and offer a general answer clearly labelled as such
+  - [x] Return answer plus sources (chapter, page) and show them in the UI
+  - [x] Keep answers at CBSE level for the student's class (simple language)
+  - [x] Reply in the student's preferred language (🔗 P2-1.3)
+- [x] **P2-2.7 User-based RAG (student's own notes)** 🆕
+  - [x] Students can upload text, PDF, or photo notes (photos handled in P2-6.6); original files may be kept in a private Supabase Storage bucket
+  - [x] Each upload is chunked and embedded with `user_id` set on every chunk
+  - [x] Retrieval merges two pools: CBSE chunks (shared, `user_id` is null) and the student's own chunks (private, `user_id` = the verified user), already handled by `match_chunks` through `p_user_id`
+  - [x] Privacy check: one user can never retrieve another user's chunks. Write tests for both layers: the API (user A calls retrieve, gets none of user B's chunks) and RLS (a client signed in as user A with the anon key cannot select user B's rows)
+  - [x] "My knowledge base" page: list, preview and delete uploaded notes (deleting also removes its chunks and vectors, and the stored file)
+- [x] **P2-2.8 Evaluate and tune**
+  - [x] Build a test set of 30 questions (about 8 per subject) with expected chapter
+  - [x] Measure: did the right chunk appear in the top 3 or top 5?
+  - [x] Try 2 chunk sizes and 2 values of `k`; record results in `docs/rag-eval.md`
+  - [x] Confirm board and class filtering works (a Class 10 question must not return Class 12 chunks)
+- [x] **P2-2.9 Admin RAG tools**
+  - [x] Admin page to upload a source PDF, pick metadata, and start ingestion (admin routes use `requireAdmin`)
+  - [x] Show ingestion status and chunk count per document (from the `documents` table)
+  - [x] Re-index and delete document buttons
+
+---
+
+## P2-3. Saarthi: AI mentor with context storing and 24/7 doubt solver 🆕
+
+🔗 Depends on P2-2.6. Saarthi answers doubts (doubt solver) and remembers the student over time (mentor).
+
+- [x] **P2-3.1 Design Saarthi (write in `Design.md`)**
+  - [x] Personality: friendly, patient, encourages, never gives only the answer for homework without explanation
+  - [x] Scope: only STEM and study help for CBSE 10 and 12; politely refuses unrelated or unsafe topics
+  - [x] Two modes: **Doubt mode** (quick answer with steps) and **Mentor mode** (study plan, revision advice, weak topics)
+  - [x] Write the system prompt and keep it in one file `backend/src/mentor/systemPrompt.js`
+- [x] **P2-3.2 Chat tables** ✍️
+  - [x] `chat_sessions` (id, user_id, title, mode, subject, created_at)
+  - [x] `chat_messages` (id, session_id, user_id, role, content, sources as `jsonb`, created_at)
+  - [x] `memory_facts` (id, user_id, type, text, subject, importance, embedding `vector(768)`, created_at, last_used_at)
+  - [x] RLS on all three: a user can only read and delete their own rows (`user_id = auth.uid()`); `on delete cascade` from `auth.users`
+- [x] **P2-3.3 Chat API** ✍️
+  - [x] `POST /api/mentor/sessions` create session
+  - [x] `POST /api/mentor/sessions/:id/messages` send a message and get the reply
+  - [x] `GET /api/mentor/sessions` and `GET /api/mentor/sessions/:id` list and load history
+  - [x] `DELETE /api/mentor/sessions/:id`
+  - [x] `requireAuth` middleware (Supabase token check) on all routes; every query filtered by `req.user.id`; rate limits from P2-0.4 applied
+- [x] **P2-3.4 Prompt building with context**
+  - [x] Combine: system prompt + student profile (class, board, language from `profiles`) + relevant memories + last N messages + retrieved chunks (🔗 P2-2.5)
+  - [x] Count tokens and trim history so the prompt never goes over the limit
+  - [x] Log the final prompt in development mode for debugging
+- [x] **P2-3.5 Streaming replies** 🆕
+  - [x] Stream Gemini output to the browser (Server-Sent Events or fetch streaming)
+  - [x] Show a typing indicator and a Stop button
+  - [x] Handle network errors and show a "Try again" button
+- [x] **P2-3.6 Context storing (memory)** 🆕 ✍️
+  - [x] **Short-term memory:** last N messages of the session (done in P2-3.4)
+  - [x] **Long-term memory:** after each session, ask Gemini to extract facts (weak topics, goals, exam date, preferred explanation style) and save them in `memory_facts`
+  - [x] **Session summary:** when a session gets long, store a summary and use it instead of old messages
+  - [x] Retrieve the top relevant memories for each new message (by subject and by embedding similarity using `pgvector`, with a small SQL function like `match_memories`)
+  - [x] "What Saarthi remembers about me" page: list, edit, delete memories (privacy and control)
+  - [x] Toggle in settings: "Let Saarthi remember me" (`profiles.saarthi_memory_enabled`; off means no memory is written)
+- [x] **P2-3.7 Chat UI**
+  - [x] Chat page `/mentor`, mobile first, with Saarthi avatar and quick-start chips ("Explain a concept", "Solve a numerical", "Quiz me")
+  - [x] Render markdown and maths (KaTeX) in answers
+  - [x] Show source citations under each answer with links to the chapter
+  - [x] Session list sidebar (drawer on mobile)
+  - [x] Floating "Ask Saarthi" button available on lesson, lab and virtual-learning pages, passing the page context
+- [x] **P2-3.8 Doubt from a photo**
+  - [x] Student uploads or captures a photo of a question
+  - [x] Send it to Gemini (vision) to read the question, then answer it with steps
+  - [x] Show the extracted text so the student can fix mistakes before answering
+- [x] **P2-3.9 Mentor features**
+  - [x] "Weak topics" list built from MCQ results (🔗 P2-5) and memory
+  - [x] Saarthi suggests a 7-day revision plan for a chapter
+  - [x] Saarthi can generate a quick 5-question quiz on request (uses P2-5.2)
+- [x] **P2-3.10 24/7 reliability** ⚠️
+  - [x] Handle Gemini errors, quota exhaustion and timeouts with friendly messages
+  - [x] Handle Supabase errors and a paused or unreachable free-tier project with a friendly message
+  - [x] Fallback: if the LLM fails, show the best matching chunks as a plain "From your textbook" answer
+  - [x] Uptime check and error logging (free tier tools such as UptimeRobot and basic logs); the uptime ping also keeps a free Supabase project active
+  - [x] Cache repeated identical questions for a short time to save quota
+- [x] **P2-3.11 Safety and quality**
+  - [x] Refusal tests: off-topic, unsafe, exam-cheating or personal-data requests
+  - [x] Thumbs up/down and "report a wrong answer" on each reply, saved for review
+  - [x] Test set of 20 doubts (5 per subject) checked by the user for correctness
+  - [x] Add a visible note: "Saarthi can make mistakes; check your textbook"
+
+---
+
+## P2-4. Summary (ask Gemini, upgraded)
+
+Phase 1 already has a basic Gemini summary. This section upgrades it. 🔗 Depends on P2-2.5.
+
+- [x] **P2-4.1 Review Phase 1 summary** and list what to improve (length, accuracy, language)
+- [x] **P2-4.2 Summary options** ✍️
+  - [x] Choose length: short (5 bullets), medium, detailed
+  - [x] Choose style: bullet points, key formulas only, "explain like I am in Class 8"
+  - [x] Output in the student's language
+- [x] **P2-4.3 Summary sources**
+  - [x] Summarise a lesson, a whole chapter (using retrieved chunks), or the student's own uploaded note
+  - [x] Long input: split into parts, summarise each, then summarise the summaries
+- [x] **P2-4.4 Saving and caching**
+  - [x] Save generated summaries in a `summaries` table (user_id, source, options as `jsonb`, text) with RLS
+  - [x] Reuse a cached summary when the same options are requested again
+  - [x] "My summaries" list with copy, delete and "send to Notes" buttons
+- [x] **P2-4.5 Summary to flashcards** (small bonus)
+  - [x] One button turns a summary into 5 to 10 flashcards for quick revision
+
+---
+
+## P2-5. MCQ questions (upgraded)
+
+🔗 Depends on P2-2.5 and P2-1.1.
+
+- [x] **P2-5.1 Question bank growth**
+  - [x] Add MCQs for Class 10 and 12 chapters (at least 15 per chapter for chapters that have lessons)
+  - [x] Tag each MCQ with `chapter, topic, difficulty, board, class_level, language`
+  - [x] Admin bulk import (CSV or JSON) with validation and error report
+- [x] **P2-5.2 AI-generated MCQs from CBSE content** 🆕
+  - [x] Generate N questions from retrieved chunks of a chapter in a fixed JSON format
+  - [x] Validate the JSON (4 options, exactly one correct answer, explanation present)
+  - [x] Store with `status = 'pending'`; only `approved` questions appear to students (enforce this in the query and in an RLS read policy)
+  - [x] Admin review screen: approve, edit, reject
+- [x] **P2-5.3 Test modes** ✍️
+  - [x] Chapter test, mixed subject test, timed test (CBSE-style paper pattern as a stretch)
+  - [x] Scoring logic and negative marking option written by the user
+  - [x] Show explanation after each question or at the end (setting)
+- [x] **P2-5.4 Results and weak topics** ✍️
+  - [x] Store attempts per question in an `attempts` table (user_id, mcq_id, correct, time_taken, created_at) with RLS
+  - [x] Results page with score, topic-wise accuracy (SQL `group by` query or view) and a simple chart
+  - [x] "Weak topics" list feeding Saarthi (🔗 P2-3.9)
+- [x] **P2-5.5 "Explain this answer" button** that sends the question and the student's option to Saarthi
+- [x] **P2-5.6 Offline readiness**
+  - [x] Make MCQ tests work from locally stored questions (completed in P2-12.5)
+
+---
+
+## P2-6. Human handwriting and notes
+
+Meaning (assumed from the earlier context, confirm in P2-0.2): turn typed text into a realistic **handwritten-style page** (like texttohandwriting.com), and also read **photographed handwritten notes** (OCR) so they can be used by RAG.
+The website `texttohandwriting.com` is only an example of the idea; build your own version.
+
+- [x] **P2-6.1 Notes editor basics**
+  - [x] Notes page with create, edit, delete, search, tags by subject and chapter (`notes` table with `user_id` and RLS)
+  - [x] Rich text or markdown editor with maths support (KaTeX)
+  - [x] Notes saved per user and available to RAG (🔗 P2-2.7)
+- [x] **P2-6.2 Study the idea of text-to-handwriting** 🆕
+  - [x] Write down how it works: handwriting-style fonts, random small variations, paper background, drawing text on a canvas
+  - [x] Choose approach: **HTML Canvas with handwriting fonts** (default; free, works offline, easy to explain)
+  - [x] ⚠️ Use only fonts with a licence that allows web use (for example Google Fonts such as Caveat, Patrick Hand, Homemade Apple)
+- [x] **P2-6.3 Handwriting renderer** ✍️
+  - [x] Text input box and live preview on a canvas
+  - [x] Controls: font, ink colour, font size, line spacing, margin
+  - [x] Paper styles: ruled, plain, graph, with a margin line
+  - [x] Natural look: tiny random changes in letter position, rotation and baseline
+  - [x] Automatic page breaks for long text
+- [x] **P2-6.4 Export**
+  - [x] Download as PNG for one page
+  - [x] Download as PDF for multiple pages (`jsPDF` or similar)
+  - [x] "Save to my notes" stores the rendered pages (in a private Supabase Storage bucket) and the original text (in the `notes` table)
+- [x] **P2-6.5 Maths and diagrams in handwriting** (stretch)
+  - [x] Render simple formulas in a handwriting-like font
+  - [x] Allow inserting a diagram image from the interactive diagrams section
+- [x] **P2-6.6 OCR of handwritten notes** 🆕
+  - [x] Upload or capture a photo of notes
+  - [x] Extract text with Gemini vision (alternative: Tesseract.js, write the comparison in `Design.md`)
+  - [x] Show the extracted text for the student to correct
+  - [x] Save the corrected text as a note and send it to the RAG ingestion (🔗 P2-2.7)
+  - [x] Test with 10 real photos of different handwriting and lighting; record accuracy
+- [x] **P2-6.7 Offline readiness**
+  - [x] Notes and rendered pages available offline (completed in P2-12.6)
+
+---
+
+## P2-7. Interactive diagrams (expanded)
+
+Phase 1 introduced SVG interaction. Here the library grows. 🔗 Depends on P2-1.2.
+
+- [x] **P2-7.1 Diagram component system** ✍️
+  - [x] One reusable `<InteractiveDiagram>` component: SVG, hotspots with labels, zoom and pan, tooltip, quiz mode
+  - [x] Diagrams described as JSON data (shapes, labels, hotspots; stored in a `jsonb` column of a `diagrams` table) so admin can add more without code
+- [x] **P2-7.2 Biology diagrams**
+  - [x] Plant cell and animal cell
+  - [x] Human digestive system (Class 10)
+  - [x] Human reproductive system or flower parts (Class 10 / 12)
+  - [x] DNA structure (Class 12)
+- [x] **P2-7.3 Physics diagrams**
+  - [x] Ray diagrams for concave and convex mirrors and lenses (draggable object)
+  - [x] Simple electric circuit with switch, bulb, resistor
+  - [x] Magnetic field lines around a magnet or current-carrying wire
+- [x] **P2-7.4 Chemistry diagrams**
+  - [x] Periodic table with click-to-see element details
+  - [x] Electrolysis or electrochemical cell
+  - [x] Structure of carbon compounds (2D view)
+- [x] **P2-7.5 Maths diagrams**
+  - [x] Unit circle with draggable angle (also used in P2-8.9)
+  - [x] Geometry constructions (circle tangents, triangle similarity)
+- [x] **P2-7.6 Diagram features**
+  - [x] "Label the parts" quiz mode (drag labels or tap and answer)
+  - [x] Each diagram has "Ask Saarthi about this" button (🔗 P2-3.7)
+  - [x] Keyboard and screen reader labels (basic accessibility)
+  - [x] Offline: diagrams are small JSON + SVG, cache them (🔗 P2-12)
+
+---
+
+## P2-8. Virtual Learning section (NEW)
+
+A new top-level section of the website: **Virtual Learning**. It holds interactive, explorable 3D / simulation topics for all four subjects. Each topic is a page where the student can rotate, play, change values and see what happens.
+
+**Reference (for ideas only):** the demo style of `https://iamtechartist.com/demos/` and the topic pages listed below.
+⚠️ Rule: study the references to understand the experience (layout, controls, learning flow), then **build our own versions**. Do not copy their code, models, text, images or assets. If any outside 3D model is used, check its licence and list it in `content/credits.md`.
+
+### Topic list for this section
+
+| Subject | Topic | Reference |
+|---|---|---|
+| Biology | Heart and circulatory system | https://iamtechartist.com/heart-and-circulatory-system/ |
+| Biology | Skeleton and muscles | https://iamtechartist.com/the-13-muscles/ |
+| Biology | Breathing and respiration | https://iamtechartist.com/breathing-and-respiration/ |
+| Physics | Light and optics | https://iamtechartist.com/light-and-optics/ |
+| Physics | Waves and sound | https://iamtechartist.com/waves-and-sound/ |
+| Physics | Newton's laws of motion | https://iamtechartist.com/newtons-laws-of-motion/ |
+| Chemistry | Molecule viewer + 2 examples | https://molview.org/ |
+| Maths | Trigonometry (own build) | built by us |
+| Maths | Conic sections (own build) | built by us |
+
+### P2-8.0 Section foundation
+
+- [x] **P2-8.0.1 Plan the section**
+  - [x] Open each reference page and write notes: what the student can do, what is explained, what controls exist
+  - [x] For each of the 9 topics write a short spec in `Design.md`: learning goal, CBSE chapter link (Class 10 or 12), controls, what is shown
+- [x] **P2-8.0.2 Table and routes** ✍️
+  - [x] `virtual_topics` table: slug, subject, class_level, board, title, description, chapter_id, type (`3d | graph | molecule`), config as `jsonb`, thumbnail, status
+  - [x] `topic_progress` table (user_id, topic_id, completed, completed_at) with RLS
+  - [x] `GET /api/virtual` (list, filter by subject and class) and `GET /api/virtual/:slug`
+  - [x] Seed all 9 topics with `status = 'draft'` until each one is finished
+- [x] **P2-8.0.3 Landing page `/virtual-learning`**
+  - [x] Four subject tabs (Maths, Physics, Chemistry, Biology) with topic cards (thumbnail, title, class)
+  - [x] Search and class filter
+  - [x] Add "Virtual Learning" to the main navigation and dashboard
+- [x] **P2-8.0.4 Topic page layout `/virtual-learning/:topic`**
+  - [x] Layout: big canvas area, side panel with controls, "Learn" tab (short explanation), "Quiz" tab (3 to 5 MCQs), "Ask Saarthi" button
+  - [x] Full-screen button and mobile layout (controls below the canvas)
+  - [x] Back link to the related lesson or chapter
+- [x] **P2-8.0.5 Shared 3D toolkit** 🆕 ✍️
+  - [x] Reusable `<Scene3D>` component for Three.js (renderer, camera, lights, orbit controls, resize handling, dispose on unmount)
+  - [x] Helper for loading `.glb` models with a loading bar (`GLTFLoader`)
+  - [x] Reusable label (annotation) component that follows a 3D point
+  - [x] Performance settings: low / high quality toggle, frame rate cap, pixel ratio limit for phones
+  - [x] Fallback message when WebGL is not available
+- [x] **P2-8.0.6 Shared 2D graph toolkit** 🆕 ✍️
+  - [x] Reusable `<GraphCanvas>` (SVG or Canvas) with axes, grid, zoom, pan, and function plotting
+  - [x] Slider component with live value and reset
+  - [x] Formula display with KaTeX that updates with the sliders
+- [x] **P2-8.0.7 Quiz and progress for topics**
+  - [x] Each topic has its own 3 to 5 MCQs stored in the `mcqs` table (column `virtual_topic_id`)
+  - [x] Save "topic completed" in `topic_progress` when the student finishes the quiz
+  - [x] Show completion on topic cards
+
+### P2-8.1 Biology: Heart and circulatory system
+
+🔗 Depends on P2-8.0.5.
+
+- [x] **P2-8.1.1 Model and assets**
+  - [x] Get or create a 3D heart model (self-made in Blender, or a free model with a clear licence, compressed `.glb` under 5 MB)
+  - [x] Separate parts: atria, ventricles, valves, aorta, vena cava, pulmonary artery and vein
+  - [x] Record source and licence in `content/credits.md`
+- [x] **P2-8.1.2 Interaction**
+  - [x] Rotate, zoom and click a part to see its name and function
+  - [x] Layer toggles: show/hide parts, X-ray / cut-away view
+  - [x] Colour code: oxygenated blood (red) vs deoxygenated blood (blue)
+- [x] **P2-8.1.3 Animation**
+  - [x] Heartbeat animation with a speed slider (beats per minute)
+  - [x] Blood flow animation as moving particles through the chambers in the correct order
+  - [x] Step-by-step mode: "Follow the blood" with next/previous buttons and short explanations
+- [x] **P2-8.1.4 Learning content**
+  - [x] Short notes tied to CBSE (Class 10: Life Processes; Class 12 as relevant)
+  - [x] 5 MCQs and a "label the parts" mini quiz
+  - [x] "Ask Saarthi about this" passes the topic as context
+- [x] **P2-8.1.5 Test** on a low-end phone and a laptop; fix performance and layout problems
+
+### P2-8.2 Biology: Skeleton and muscles
+
+- [x] **P2-8.2.1 Model and assets**
+  - [x] Skeleton model plus major muscles (own model or properly licensed `.glb`)
+  - [x] Name list of bones and muscles to include (about 13 main muscles as in the reference idea, plus main bones)
+- [x] **P2-8.2.2 Interaction**
+  - [x] Click a bone or muscle to see name, function and type of joint or muscle action
+  - [x] Toggle layers: skeleton only, muscles only, both
+  - [x] Search box to find and highlight a part by name
+- [x] **P2-8.2.3 Animation**
+  - [x] Show muscle contraction and joint movement (for example, biceps and triceps at the elbow)
+  - [x] Slider to move the joint and see muscles change
+- [x] **P2-8.2.4 Learning content**
+  - [x] Notes linking to CBSE chapters (movement and locomotion as per syllabus)
+  - [x] 5 MCQs and a "name the bone" quiz
+- [x] **P2-8.2.5 Test** on mobile and desktop
+
+### P2-8.3 Biology: Breathing and respiration
+
+- [x] **P2-8.3.1 Model and assets**
+  - [x] Respiratory system model: nose, trachea, bronchi, lungs, alveoli, diaphragm
+  - [x] Enlarged alveolus view for gas exchange
+- [x] **P2-8.3.2 Interaction and animation**
+  - [x] Inhale / exhale animation with the diaphragm and rib cage moving
+  - [x] Breathing rate slider; lungs expand and shrink with volume graph
+  - [x] Alveolus zoom showing O₂ moving into blood and CO₂ moving out
+  - [x] Click parts to see names and functions
+- [x] **P2-8.3.3 Learning content**
+  - [x] Notes linked to CBSE (Life Processes, Class 10; Breathing and Exchange of Gases, Class 11 revision for Class 12 as needed)
+  - [x] 5 MCQs and a "follow the air" step mode
+- [x] **P2-8.3.4 Test** on mobile and desktop
+
+### P2-8.4 Physics: Light and optics
+
+- [x] **P2-8.4.1 Plan and ray engine** ✍️
+  - [x] Write the ray calculations yourself: reflection law, refraction (Snell's law), mirror formula, lens formula
+  - [x] Unit tests for each formula with textbook examples
+- [x] **P2-8.4.2 Simulations**
+  - [x] Mirrors: concave and convex with a draggable object, show image position, size, nature
+  - [x] Lenses: convex and concave with the same controls
+  - [x] Refraction through a glass slab and a prism with adjustable angle and refractive index
+  - [x] Optional: total internal reflection
+- [x] **P2-8.4.3 3D or 2.5D view**
+  - [x] Rays drawn in a 3D scene or a clean 2D scene (choose and justify the choice)
+  - [x] Principal axis, focus (F), centre of curvature (C) shown with labels
+- [x] **P2-8.4.4 Learning content**
+  - [x] Live table: u, v, f, magnification, image type, updating as the object moves
+  - [x] Notes for Class 10 (Light) and Class 12 (Ray Optics)
+  - [x] 5 MCQs, including numerical questions
+- [x] **P2-8.4.5 Test** the formulas against solved textbook problems
+
+### P2-8.5 Physics: Waves and sound
+
+- [x] **P2-8.5.1 Wave maths** ✍️
+  - [x] Functions for wave equation, frequency, wavelength, speed, amplitude
+  - [x] Superposition of two waves
+- [x] **P2-8.5.2 Simulations**
+  - [x] Transverse and longitudinal wave animation with sliders for frequency and amplitude
+  - [x] Live graph of displacement vs time and vs position
+  - [x] Superposition and interference (constructive and destructive)
+  - [x] Standing waves on a string (stretch)
+- [x] **P2-8.5.3 Sound**
+  - [x] Play a tone using the Web Audio API 🆕 with frequency and volume controls (add a mute-safe warning)
+  - [x] Show pitch vs frequency and loudness vs amplitude
+  - [x] Echo or speed-of-sound demo (distance and time)
+- [x] **P2-8.5.4 Learning content**
+  - [x] Notes for Class 10 (Sound) and Class 12 (Waves)
+  - [x] 5 MCQs, including numerical questions
+- [x] **P2-8.5.5 Test** audio on mobile browsers (autoplay rules need a user tap)
+
+### P2-8.6 Physics: Newton's laws of motion
+
+- [x] **P2-8.6.1 Physics engine choice** 🆕
+  - [x] Decide: own simple integrator (default, easier to explain) or a library such as `cannon-es`; write the reason
+  - [x] ✍️ Write the force, acceleration and motion update yourself
+- [x] **P2-8.6.2 Simulations (one scene per law)**
+  - [x] First law: object keeps moving or staying at rest; friction on/off
+  - [x] Second law: apply force and change mass; show F = ma with live graphs (a vs F, a vs m)
+  - [x] Third law: two carts or skaters pushing each other, equal and opposite forces with arrows
+  - [x] Momentum and collisions (stretch)
+- [x] **P2-8.6.3 Visuals**
+  - [x] Force arrows scaled to size, velocity and acceleration readouts, reset and slow-motion controls
+- [x] **P2-8.6.4 Learning content**
+  - [x] Notes for Class 11 basics revised for Class 12 and Class 10 force and motion as per syllabus
+  - [x] 5 MCQs and numerical practice linked to the simulation values
+- [x] **P2-8.6.5 Test** accuracy against hand calculation
+
+### P2-8.7 Chemistry: Molecule viewer (MolView-style) with 2 examples
+
+Reference: `https://molview.org/` (a molecule viewer where users search a compound and rotate it in 3D).
+Assumption: build our own simple viewer and ship **2 worked examples**. Default examples: **Water (H₂O)** and **Ethanol (C₂H₅OH)**. Change them in P2-0.2 if you prefer others (for example methane or benzene).
+
+- [x] **P2-8.7.1 Choose the technology** 🆕
+  - [x] Use an open-source viewer such as **3Dmol.js** (or Three.js with own atoms and bonds) and write the reason
+  - [x] Check the licence of the library and of the data source
+- [x] **P2-8.7.2 Data**
+  - [x] Get 3D structure data (SDF or similar) from a public source such as PubChem and save the two examples locally so they work offline
+  - [x] Store molecule metadata: name, formula, molar mass, bond type, uses
+- [x] **P2-8.7.3 Viewer**
+  - [x] Show molecule in ball-and-stick, space-filling and wireframe styles with a style switch
+  - [x] Rotate, zoom, atom labels, bond lengths and angles on click
+  - [x] Element colour key (CPK colours)
+- [x] **P2-8.7.4 Example 1: Water (H₂O)**
+  - [x] Show bent shape and bond angle, polarity arrows, partial charges
+  - [x] Short explanation (covalent bond, polar molecule) with 3 MCQs
+- [x] **P2-8.7.5 Example 2: Ethanol (C₂H₅OH)**
+  - [x] Show the carbon chain and the -OH functional group highlighted
+  - [x] Short explanation (carbon compounds, functional groups, Class 10 Carbon and its Compounds) with 3 MCQs
+- [x] **P2-8.7.6 Search (stretch)**
+  - [x] Search box to load any molecule by name through the PubChem public API
+  - [x] Cache results, handle "not found" and slow network
+- [x] **P2-8.7.7 Test** on mobile (touch rotate) and with network off for the two saved examples
+
+### P2-8.8 Maths: Trigonometry (own build)
+
+- [x] **P2-8.8.1 Maths and spec** ✍️
+  - [x] Write functions for sin, cos, tan, their reciprocals and identities using degrees and radians
+  - [x] Plan the screens: unit circle, graphs, right triangle, heights and distances
+- [x] **P2-8.8.2 Unit circle simulation**
+  - [x] Draggable angle on the unit circle with sin, cos and tan shown as live lengths
+  - [x] Table of standard angles (0°, 30°, 45°, 60°, 90°) highlighted when reached
+  - [x] Degrees / radians switch
+- [x] **P2-8.8.3 Graph simulation**
+  - [x] Plot y = a·sin(bx + c) + d with sliders for a, b, c, d
+  - [x] Plot cos and tan with asymptotes; show period and amplitude
+  - [x] Show formula in KaTeX that updates live
+- [x] **P2-8.8.4 Right triangle and applications (Class 10)**
+  - [x] Drag the triangle to see sin, cos, tan of an angle from the sides
+  - [x] Heights and distances scene: angle of elevation and depression with a movable observer
+- [x] **P2-8.8.5 Identity checker**
+  - [x] Check sin²θ + cos²θ = 1 and other identities with live numeric proof
+- [x] **P2-8.8.6 Learning content**
+  - [x] Notes for Class 10 (Introduction to Trigonometry, Applications) and Class 12 (Inverse Trigonometric Functions)
+  - [x] 5 MCQs and a few "find the value" practice questions
+- [x] **P2-8.8.7 Test** values against a calculator for at least 20 angles
+
+### P2-8.9 Maths: Conic sections (own build)
+
+- [x] **P2-8.9.1 Maths and spec** ✍️
+  - [x] Write the equations: circle, parabola, ellipse, hyperbola (standard forms, focus, directrix, eccentricity)
+  - [x] Plan: a graph view and a 3D "cone cut by a plane" view
+- [x] **P2-8.9.2 Graph view**
+  - [x] Choose a conic type and change parameters with sliders (radius, a, b, focal length)
+  - [x] Show focus or foci, directrix, vertices, axes, eccentricity live
+  - [x] Formula panel updating in KaTeX
+- [x] **P2-8.9.3 Cone slicing view** 🆕
+  - [x] 3D double cone with a movable and tiltable plane
+  - [x] The cross-section curve is shown and named (circle, ellipse, parabola, hyperbola) as the plane angle changes
+  - [x] Link the 3D view and the graph view so changing one updates the other
+- [x] **P2-8.9.4 Locus demo**
+  - [x] Show the definition: a point moving so that distance to focus / directrix has a fixed ratio, tracing the curve
+- [x] **P2-8.9.5 Learning content**
+  - [x] Notes for Class 12 (conic sections as per the current CBSE syllabus; confirm the chapter) and Class 10 (circles)
+  - [x] 5 MCQs and practice questions
+- [x] **P2-8.9.6 Test** shapes against known equations and verify eccentricity values
+
+### P2-8.10 Section finish
+
+- [x] **P2-8.10.1 Publish topics**
+  - [x] All 9 topics changed from `draft` to `published` after their tests pass
+- [x] **P2-8.10.2 Performance pass** ⚠️
+  - [x] Lazy-load Three.js and each topic's code so the main app stays fast (route-based code splitting)
+  - [x] Keep each model under 5 MB and total page load reasonable on 4G
+  - [x] Test on one low-end Android phone
+- [x] **P2-8.10.3 Credits and licences**
+  - [x] `content/credits.md` lists every model, font, library and data source with licence
+  - [x] Credits page in the app footer
+- [x] **P2-8.10.4 Offline readiness**
+  - [x] Decide which topics are cached offline (small ones: maths, molecule examples, waves) and which are online only (large 3D models); show this in the UI (completed in P2-12.7)
+
+---
+
+## P2-9. 3D virtual labs (experiments)
+
+Different from Section 8: Virtual Learning explains a concept; **Labs** are step-by-step **experiments** with apparatus, measurements and a result sheet, aligned to CBSE practicals.
+Phase 1 delivered the simple pendulum. 🔗 Depends on P2-8.0.5.
+
+- [x] **P2-9.1 Lab framework** ✍️
+  - [x] `labs` table: title, subject, class_level, aim, apparatus list, steps, observation table template, expected result, viva questions (lists and templates stored as `jsonb`)
+  - [x] `lab_attempts` table (user_id, lab_id, observations as `jsonb`, result, created_at) with RLS
+  - [x] Lab page layout: aim, apparatus, 3D bench, steps panel, observation table, result and conclusion, viva questions
+  - [x] Step system: the student must do steps in order; wrong action shows a hint
+  - [x] Save lab attempts and show them on the profile
+  - [x] Saarthi button for help with the current step
+- [x] **P2-9.2 Physics labs**
+  - [x] **Simple pendulum** (from Phase 1): verify it works inside the new framework and add observation table
+  - [x] **Ohm's law** (Class 10/12): circuit with battery, rheostat, ammeter, voltmeter; plot V vs I graph automatically
+  - [x] **Refraction through a glass slab / focal length of a lens** (Class 10/12): ray tracing on a 3D bench
+  - [x] Optional: metre bridge (Class 12)
+- [x] **P2-9.3 Chemistry labs**
+  - [x] **Acid-base titration** (Class 12 practical idea): burette, conical flask, indicator colour change, reading the endpoint, calculating concentration
+  - [x] **Testing acids and bases with litmus / pH indicators** (Class 10)
+  - [x] **Reactions of metals with salt solutions or displacement reactions** (Class 10)
+  - [x] Safety rules shown at the start of every chemistry lab
+- [x] **P2-9.4 Biology labs**
+  - [x] **Using a microscope** to view an onion peel and a stomata slide (Class 10/12)
+  - [x] **Osmosis experiment** (potato osmoscope) (Class 12)
+  - [x] Optional: pollen germination or mitosis in onion root tip slide viewing
+- [x] **P2-9.5 Lab scoring and feedback**
+  - [x] Check observations against expected range and show the percentage error
+  - [x] Generate a downloadable lab report PDF with aim, observations and result
+- [x] **P2-9.6 Test**
+  - [x] Each lab completed from start to finish on mobile and desktop
+  - [x] Wrong-order and wrong-value cases handled without crashes
+- [x] **P2-9.7 Offline readiness**
+  - [x] Cache lab definitions and lightweight assets (completed in P2-12.7)
+
+---
+
+## P2-10. AI-based videos (dummy videos for chapters)
+
+User note: "just give dummy videos". Real AI-generated videos are produced with a tool (for example pdftovideo.ai, or any other text/PDF-to-video tool); the project must have **at least one video for one chapter in each subject**, and the pipeline for adding more.
+
+- [x] **P2-10.1 Video plan**
+  - [x] Choose 4 chapters (one per subject) and, if time allows, 8 (two per subject)
+  - [x] For each, write a short storyboard/script (60 to 180 seconds) in `content/video-scripts/`
+  - [x] Decide the language of each (English first; Hindi version as stretch)
+- [x] **P2-10.2 Produce the videos** ⚠️
+  - [x] Try a PDF/text-to-video tool (for example pdftovideo.ai) using the chapter notes as input and note the free-tier limits and any watermark
+  - [x] If the tool is not usable, make dummy videos from slides plus narration (any screen recorder or video editor) so the platform can be tested
+  - [x] Label placeholder videos clearly as `dummy = true` in the data so they can be replaced later
+  - [x] Export in web-friendly MP4 (H.264), 720p, small size; also make a 360p version for slow networks
+  - [x] Create a thumbnail and subtitles file (`.vtt`) for each video
+- [x] **P2-10.3 Table and API** ✍️
+  - [x] `videos` table: title, subject, class_level, board, language, chapter_id, url, thumbnail, duration, subtitles, dummy flag, size
+  - [x] `video_progress` table (user_id, video_id, position_seconds, updated_at) with RLS
+  - [x] `GET /api/videos` (filters) and `GET /api/videos/:id`
+  - [x] Admin upload and edit form (with the metadata)
+- [x] **P2-10.4 Hosting** ⚠️
+  - [x] Choose a host: Cloudinary free tier, unlisted YouTube embeds, **Supabase Storage** (check its current file size and bandwidth limits first), or Cloudflare R2 / S3. Write the reason and the limit
+  - [x] Do not store large video files in the Git repository
+  - [x] Add the video URLs through the admin panel
+- [x] **P2-10.5 Video pages**
+  - [x] `/videos` list with filters (subject, class, language)
+  - [x] Player page with play speed, quality choice (360p/720p), subtitles on/off
+  - [x] "Chapter videos" block on each lesson page
+  - [x] Remember watch progress per user (resume where they left, saved in `video_progress`)
+- [x] **P2-10.6 Video + Saarthi**
+  - [x] Store the video transcript as RAG chunks (`type = 'video'`) so Saarthi can answer from it and cite the timestamp
+  - [x] "Ask about this video" button passes the transcript context
+- [x] **P2-10.7 Offline readiness**
+  - [x] Decide the offline lecture format: downloadable 360p video or audio plus transcript (completed in P2-12.8)
+
+---
+
+## P2-11. Community (Discord)
+
+- [x] **P2-11.1 Create and set up the Discord server**
+  - [x] Server name, icon, rules and welcome message
+  - [x] Channels: `#announcements`, `#rules`, `#general`, one per subject, one per class (10 and 12), `#doubts`, `#study-groups`, `#showcase`
+  - [x] Roles: Admin, Mentor, Student, plus class roles; set permissions so only admins post in announcements
+  - [x] Turn on moderation settings (verification level, spam filters)
+- [x] **P2-11.2 Safety for students** ⚠️
+  - [x] Write community guidelines (respect, no personal data sharing, no cheating)
+  - [x] Add report/contact instructions and at least 2 moderators
+  - [x] Note the age rules of Discord and mention them on the join page (since many users are school students)
+- [x] **P2-11.3 Website integration**
+  - [x] `/community` page with join button, rules and channel list
+  - [x] Embed the Discord server widget (member count, online users)
+  - [x] "Join community" link in navbar, footer and dashboard
+  - [x] Invite link set not to expire and kept in an environment variable
+- [x] **P2-11.4 Automation (webhook)** 🆕
+  - [x] Create a Discord webhook and call it from the backend
+  - [x] Post to `#announcements` when admin publishes new content (new chapter, video, lab)
+  - [x] Keep the webhook URL secret in `.env`
+- [x] **P2-11.5 Optional Discord bot** 🆕 (stretch)
+  - [x] Simple bot with `discord.js` that posts a "Question of the day" MCQ
+  - [x] Optional `/ask` command using the same RAG and Saarthi service (with rate limits)
+- [ ] **P2-11.6 Optional account linking** (stretch)
+  - [ ] "Login with Discord" through the Discord provider in Supabase Auth (Authentication → Providers), or link a Discord username to the profile
+  - [ ] Auto-assign class role based on profile
+
+---
+
+## P2-12. Offline mode (questions, lectures, notes) 🆕
+
+🔗 Depends on P2-5, P2-6, P2-7, P2-8, P2-9 and P2-10 (to know what to store).
+Approach: turn the website into a **PWA** (Progressive Web App) with a service worker and IndexedDB. This also makes the website installable on phones, so no separate mobile app is needed.
+
+- [x] **P2-12.1 Learn PWA basics (for viva)**
+  - [x] Write `docs/pwa.md`: manifest, service worker, cache vs IndexedDB, online/offline events, background sync
+  - [x] Decide the tool: `vite-plugin-pwa` (Workbox), and write why
+- [x] **P2-12.2 PWA setup**
+  - [x] Web app manifest: name, icons (192, 512, maskable), theme colour, `display: standalone`
+  - [x] Register the service worker; app is installable on Android and desktop
+  - [x] Offline fallback page
+- [x] **P2-12.3 Caching strategy** ✍️
+  - [x] App shell (HTML, JS, CSS, fonts, icons): precache
+  - [x] API data for lessons, questions, notes: network-first with cache fallback or stale-while-revalidate (choose per route and justify)
+  - [x] Never cache Supabase Auth requests or responses that carry tokens
+  - [x] Images and thumbnails: cache-first with size limits
+  - [x] Cache versioning and cleanup of old caches
+- [x] **P2-12.4 Local database (IndexedDB)** 🆕
+  - [x] Use Dexie.js (or `idb`) and define stores: `lessons`, `questions`, `attempts`, `notes`, `downloads`, `syncQueue`
+  - [x] Wrapper functions for read/write kept in `frontend/src/offline/`
+- [x] **P2-12.5 Offline questions**
+  - [x] "Download for offline" per chapter downloads its MCQs into IndexedDB
+  - [x] Tests run entirely from local data and scoring works offline (the same scoring code as online)
+  - [x] Attempts are stored locally and synced to the Supabase `attempts` table when the network returns
+- [x] **P2-12.6 Offline notes**
+  - [x] Notes can be viewed, created and edited offline
+  - [x] Handwritten-style pages (images) cached
+  - [x] Sync queue with conflict rule (last edit wins using `updated_at`, show a note when a conflict was resolved)
+- [x] **P2-12.7 Offline lessons and light interactive content**
+  - [x] Lesson text, diagrams (SVG/JSON) and small virtual-learning topics (maths, molecule examples) cached on request
+  - [x] Big 3D models are marked "online only" or downloadable with a size warning
+- [x] **P2-12.8 Offline lectures (videos)** ⚠️
+  - [x] Download choice: 360p video or audio-only plus transcript
+  - [x] Show storage used and a "Remove download" button
+  - [x] Store large media with the Cache Storage API, not localStorage; handle storage quota errors
+- [x] **P2-12.9 Offline UX**
+  - [x] Online/offline indicator and a banner when offline
+  - [x] `/offline` page listing everything downloaded
+  - [x] Disable or label features that need the internet (Saarthi, RAG, translation); show helpful text instead of errors
+  - [x] An already signed-in user can open downloaded content offline (the Supabase session is stored in the browser); when the token has expired, show downloaded content anyway and refresh the session once back online
+- [x] **P2-12.10 Sync** ✍️
+  - [x] Background sync (where supported) or sync on reconnect for attempts and notes
+  - [x] Avoid duplicates using client-generated UUIDs as the primary key (Postgres `uuid` columns), with upsert on insert
+- [x] **P2-12.11 Test offline**
+  - [x] Use browser DevTools offline mode and airplane mode on a real phone
+  - [x] Checklist: open the app, take a test, read a note, open a lesson, play a downloaded lecture, then go online and confirm sync
+
+---
+
+## P2-13. Mobile app (REMOVED from Phase 2)
+
+Decision: the project stays a **website for now**. There is no Android app, Capacitor project, APK or store release in this phase. The ID P2-13 is kept only so the other section numbers do not change. Nothing here needs to be done.
+
+- Phones are still supported through the browser: pages are mobile first, and the offline mode in P2-12 (PWA) makes the website installable.
+- If a native app is wanted later, it becomes a new phase after Phase 2 is finished.
+
+---
+
+## P2-14. Admin panel updates
+
+- [x] **P2-14.1 Content management for new features**
+  - [x] Admin access is checked through `profiles.role = 'admin'` (`requireAdmin` middleware on the backend; admin pages hidden for other roles)
+  - [x] Manage Virtual Learning topics (status, config, quiz questions)
+  - [x] Manage Labs (steps, apparatus, expected values)
+  - [x] Manage Videos (upload metadata, dummy flag, transcript)
+  - [x] Manage RAG documents (🔗 P2-2.9)
+  - [x] Review queues: AI-generated MCQs (🔗 P2-5.2), draft translations (🔗 P2-1.5), reported Saarthi answers (🔗 P2-3.11)
+- [x] **P2-14.2 Basic analytics**
+  - [x] Counts (SQL queries or views): users, Saarthi questions per day, most used topics and labs, most asked subjects
+  - [x] AI usage and quota status panel, plus a Supabase usage note (database size and storage against the free-tier limits)
+
+---
+
+## P2-15. Testing, security, performance and deployment
+
+- [x] **P2-15.1 Security checks** ⚠️
+  - [x] All AI keys and the Supabase service role key only on the server; check the frontend bundle contains no secrets (search the built files for the key prefix)
+  - [x] RLS is enabled on every table with user data; run a check query listing tables where RLS is off
+  - [x] Validate and size-limit all uploads (type, size) and scan filenames; Supabase Storage buckets for user files are private with per-user folder policies
+  - [x] Protect against prompt injection from uploaded notes (treat retrieved text as data, not instructions) and write a test
+  - [x] User data isolation tests (notes, chats, memories, chunks), through the API and through RLS
+  - [x] CORS, helmet and rate limiting reviewed
+  - [x] Auth settings reviewed: email confirmation turned back on, password rules, redirect URLs limited to your real domains
+- [x] **P2-15.2 Privacy**
+  - [x] Privacy page explaining what Saarthi stores and why
+  - [x] "Delete my data" button removing chats, memories, notes, chunks and vectors (`on delete cascade` from `auth.users`; the backend deletes the account with `supabaseAdmin.auth.admin.deleteUser(id)` and removes the user's Storage files)
+  - [x] Extra care for students under 18 (no unnecessary personal data)
+- [x] **P2-15.3 Automated tests**
+  - [x] Unit tests for scoring, retrieval, ray and physics formulas, trig and conic functions
+  - [x] API tests for the main routes (including 401 without a token and 403 for non-admins)
+  - [x] One end-to-end test of the main flow (login, open lesson, ask Saarthi, take MCQ) with Playwright or Cypress, using a dedicated test user
+- [x] **P2-15.4 Performance**
+  - [x] Lighthouse run on the main pages and fix big issues
+  - [x] Code splitting for Three.js, labs and virtual topics
+  - [x] Compress images, models and videos
+  - [x] Postgres indexes checked for common queries (use `explain analyze` on slow ones)
+- [x] **P2-15.5 Accessibility and usability**
+  - [x] Keyboard navigation, readable contrast, alt text, text-size option
+  - [x] Test with 3 real students (Class 10 or 12) and note feedback
+- [x] **P2-15.6 Deployment**
+  - [x] Update environment variables on the host (Supabase URL, anon key, service role key, Gemini key, others from `.env.example`)
+  - [x] Run all `backend/sql/*.sql` files, in order, on the production Supabase project (or confirm the same project is used) and check the `vector` extension and HNSW index exist
+  - [x] Add the deployed frontend URL to Supabase Authentication → URL Configuration
+  - [x] Deploy backend and frontend
+  - [x] Set up error monitoring and uptime checks
+  - [x] Backup plan for the database (Supabase backups or scheduled `pg_dump`; check what the free tier includes) and `content/`
+- [x] **P2-15.7 Documentation and demo**
+  - [x] Update `README.md` with setup steps (including Supabase setup and SQL files) and screenshots
+  - [x] Architecture diagram covering RAG, Saarthi, Supabase (Auth, Postgres, pgvector), offline sync and the website
+  - [x] Demo script of 5 minutes (Virtual Learning, a lab, Saarthi with citations, offline mode, website on a phone)
+  - [x] Viva sheet: 25 questions and answers covering RAG, embeddings, memory, PWA, Three.js, i18n, Supabase Auth, RLS and security
+  - [x] Tag release `v2.0`
+
+---
+
+## Final acceptance checklist (Phase 2 is done only when all are `[x]`)
+
+- [x] Login, signup and logout work through Supabase Auth, and the app no longer uses MongoDB or custom JWT code
+- [x] A student can pick **CBSE, Class 10 or 12, and a language**, and all content follows that choice
+- [x] Saarthi answers CBSE doubts at any time, with sources, in the chosen language, and remembers the student across sessions (with the ability to view and delete memory)
+- [x] RAG works with both CBSE content and the student's own notes, and user data stays private (verified by tests on both the API and RLS)
+- [x] Gemini summary has length/style options and works on lessons and notes
+- [x] MCQs include AI-generated, admin-approved questions, timed tests and weak-topic results
+- [x] Typed text can be turned into handwriting-style pages (PNG/PDF), and photographed handwritten notes can be read by OCR
+- [x] Interactive diagrams exist for all four subjects
+- [x] **Virtual Learning** section has all 9 topics published: heart, skeleton and muscles, respiration, light and optics, waves and sound, Newton's laws, molecule viewer with 2 examples, trigonometry, conic sections
+- [x] 3D labs exist for physics, chemistry and biology, with observation tables and lab reports
+- [x] At least one video per subject plays on the site (dummy videos allowed), with subtitles and progress saving
+- [x] The Discord community is set up and linked from the site
+- [x] Questions, lectures and notes work offline and sync when back online
+- [x] Security, privacy, performance and deployment tasks are finished and the demo and viva sheet are ready
+
+---
+
+## Appendix A. Difficulty guide (hardest first)
+
+1. CBSE RAG pipeline and user-based RAG (new concepts: chunking, embeddings, vector search with pgvector, evaluation)
+2. Saarthi memory (context storing) and prompt building
+3. Offline mode with sync (service worker, IndexedDB, conflicts, auth sessions)
+4. 3D models and animations for the Virtual Learning section (asset creation, performance on phones)
+5. 3D labs with step logic
+6. Conic cone-slicing and ray-optics simulations (maths and visuals together)
+7. Handwriting renderer and OCR
+8. Supabase Auth, SQL tables and Row Level Security (new concepts: policies, service role vs anon key)
+9. Multi-language content
+10. AI video production (tool limits)
+11. Discord community (easy, mostly setup)
+12. Summary and MCQ upgrades (closest to Phase 1)
+
+## Appendix B. Non-code risks
+
+- **Content volume:** two classes x four subjects is a lot; ship a few good chapters per subject first, then add more
+- **3D assets:** good free models are limited; plan time for Blender or searching for properly licensed models
+- **Licences:** textbooks, 3D models, fonts and videos each have terms; record them in `content/credits.md`
+- **Free-tier limits:** Gemini quota, Supabase (database size including vectors, storage, bandwidth, and pausing of inactive projects), video hosting and bandwidth
+- **Key safety:** the Supabase service role key bypasses all RLS; if it ever leaks (for example on GitHub), reset it in the Supabase dashboard immediately
+- **Low-end phones:** 3D and video must have low-quality modes
+- **Accuracy:** AI answers and AI-generated MCQs must be checked by a human before students rely on them
+- **Time:** course sections to finish by 1 January and December exams; start Phase 2 sections only after Phase 1 is deployed on Supabase, and take Sections 1 to 5 first
+
+## Appendix C. Useful repos and references (remind the user when relevant)
+
+- `Arindam200/awesome-ai-apps`: examples of LLM, RAG, agent and MCP apps (use for Sections 2 and 3)
+- `public-apis/public-apis`: free APIs (for example science and chemistry data sources, relevant to Section 8.7)
+- Supabase docs (supabase.com/docs): Auth, Row Level Security, `pgvector` and Storage guides (use for P2-0.6, P2-2.4 and P2-2.7)
+- `SUPABASE_SETUP.md` in this project: keys, SQL, env files and code for the Supabase move
+- Reference sites for Virtual Learning: `https://iamtechartist.com/demos/` and the topic pages listed in Section 8; `https://molview.org/` for the chemistry viewer idea
+- Idea site for handwriting: `https://texttohandwriting.com/` (example only; build your own)
+- Idea site for AI videos: `pdftovideo.ai` (example only; any tool is fine)
